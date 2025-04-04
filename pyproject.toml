@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pymcp-sse"
+version = "0.1.0"
+authors = [
+    {name = "Your Name or Org", email = "your-email@example.com"},
+]
+description = "A Python implementation of MCP over HTTP/SSE with robust connection handling."
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Communications",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "fastapi>=0.95.0",
+    "uvicorn>=0.22.0",
+    "sse-starlette>=1.6.1",
+    "httpx>=0.24.0",
+    "httpx-sse>=0.3.1",
+    "pydantic>=2.0.0",
+]
+keywords = ["mcp", "model context protocol", "sse", "server sent events", "llm", "agent"]
+
+[project.urls]
+"Homepage" = "https://github.com/yourusername/pymcp-sse"
+"Repository" = "https://github.com/yourusername/pymcp-sse"
+"Bug Tracker" = "https://github.com/yourusername/pymcp-sse/issues"
+
+[tool.setuptools]
+packages = ["pymcp_sse"]
