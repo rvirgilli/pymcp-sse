@@ -94,7 +94,27 @@ class MultiMCPClient:
                 
         logger.info(f"Finished connection attempts. Successfully connected to {successful_connections}/{len(self.server_urls)} servers")
         
+        # Try to fetch tool details from each server that has the describe_tools endpoint
+        await self._fetch_tool_details()
+        
         return final_results
+        
+    async def _fetch_tool_details(self):
+        """
+        Attempt to fetch detailed tool information from servers that support the describe_tools endpoint.
+        """
+        for alias, client in self.clients.items():
+            if "describe_tools" in client.available_tools:
+                try:
+                    logger.info(f"Fetching detailed tool information from server '{alias}'")
+                    # Call the describe_tools endpoint
+                    client.tool_details = await client.call_tool("describe_tools")
+                    logger.info(f"Retrieved detailed information for {len(client.tool_details)} tools from '{alias}'")
+                except Exception as e:
+                    logger.warning(f"Failed to fetch tool details from server '{alias}': {e}")
+                    client.tool_details = {}
+            else:
+                client.tool_details = {}
         
     async def call_tool(self, server_alias: str, tool_name: str, **kwargs) -> Any:
         """
@@ -135,7 +155,8 @@ class MultiMCPClient:
             info[alias] = {
                 "status": status,
                 "initialized": initialized,
-                "available_tools": client.available_tools if initialized else []
+                "available_tools": client.available_tools if initialized else [],
+                "tool_details": client.tool_details if initialized and hasattr(client, "tool_details") else {}
             }
             
         return info

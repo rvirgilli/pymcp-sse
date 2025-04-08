@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 import asyncio
 import os
 import logging
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 
 from ..utils import get_logger
 
@@ -18,6 +18,12 @@ class BaseLLMClient(ABC):
     Abstract base class for LLM clients in PyMCP.
     Provides a common interface for different LLM implementations.
     """
+    
+    @property
+    @abstractmethod
+    def tool_call_prefix(self) -> str:
+        """The prefix string that indicates a tool call in the LLM's output."""
+        pass
     
     @abstractmethod
     async def initialize(self) -> bool:
@@ -72,9 +78,24 @@ class BaseLLMClient(ABC):
         """
         pass
     
+    @abstractmethod
+    def parse_tool_call(self, response: str) -> Optional[Tuple[str, str, Dict[str, Any]]]:
+        """
+        Parse the LLM's response text to find a tool call instruction.
+        
+        Args:
+            response: The raw text response from the LLM.
+            
+        Returns:
+            A tuple (server_name, tool_name, parameters) if a tool call is found,
+            otherwise None.
+        """
+        pass
+
+    @abstractmethod
     def get_default_tool_instructions(self) -> str:
         """
-        Get the default instructions for tool usage.
+        Get the default instructions for how the LLM should format tool calls.
         This can be appended to the system instructions.
         
         Returns:

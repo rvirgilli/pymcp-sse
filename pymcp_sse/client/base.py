@@ -84,6 +84,7 @@ class BaseMCPClient:
         self.message_endpoint: Optional[str] = None
         self.available_tools: List[str] = []
         self.protocol_version: Optional[str] = None
+        self.tool_details: Dict[str, Any] = {}
         
         # Transport
         self.http_client: Optional[httpx.AsyncClient] = None

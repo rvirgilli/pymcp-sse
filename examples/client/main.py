@@ -8,6 +8,8 @@ import logging
 from typing import Dict, Any
 import readline
 import traceback
+import json
+import signal # Import signal module
 
 # Add pymcp to path if running directly from examples
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -69,6 +71,12 @@ class MCPClientApp:
             
         self.running = True
         logger.info("MCPClientApp started successfully")
+        
+        # Generate and print opening statement
+        print("\nGenerating opening statement...")
+        opening_statement = await self.llm_agent.generate_opening_statement()
+        print(f"\nAssistant: {opening_statement}\n")
+        
         return True
         
     async def _handle_notification(self, server: str, notification: Dict[str, Any]):
@@ -87,8 +95,8 @@ class MCPClientApp:
         
         # Log the notification based on type
         if notif_type == NOTIFICATION_DATA:
-            # Special handling for sensor data
-            if "reading" in data:
+            # Special handling for sensor data (from Server 2)
+            if server == "server2" and "reading" in data:
                 reading = data["reading"]
                 sensor_type = data.get("sensor_type", "unknown")
                 value = reading.get("value", "N/A")
@@ -97,6 +105,17 @@ class MCPClientApp:
                 
                 logger.info(f"Sensor data from {server}: {sensor_type} = {value}{unit} ({status})")
                 print(f"\n>>> Notification: Sensor data from {server}: {sensor_type} = {value}{unit} ({status})")
+            # Handle data from Server 3
+            elif server == "server3":
+                msg = f"Data notification from {server}: {message}"
+                logger.info(msg)
+                print(f"\n>>> Notification: {msg}")
+                if data:
+                    formatted_data = json.dumps(data, indent=2)
+                    print(f"  └─ Data: {formatted_data}")
+            else:
+                logger.info(f"Data from {server}: {message} - {data}")
+                print(f"\n>>> Notification: DATA from {server}: {message} - {data}")
         else:
             # Standard notification
             if notif_type == NOTIFICATION_INFO:
@@ -137,19 +156,23 @@ class MCPClientApp:
         
         while self.running:
             try:
-                # Run blocking input() in a separate thread
-                user_input = await asyncio.to_thread(input, "\n> ")
-                user_input = user_input.strip()
+                # Get user input
+                user_input = await asyncio.to_thread(input, "> ")
                 
-                if not user_input:
-                    continue
-                    
-                if user_input.lower() in ("exit", "quit"):
+                # Check for exit command
+                if user_input.lower() in ["exit", "quit"]:
+                    print("Exiting CLI")
                     break
                 
                 # Process the input with the LLM agent
-                response = await self.llm_agent.process_query(user_input)
-                print(response)
+                try:
+                    # response = await self.llm_agent.process_query(user_input)
+                    # Instead of returning a response, handle_message processes and prints directly
+                    await self.llm_agent.handle_message(user_input)
+                    # print(response)
+                except Exception as e:
+                    logger.error(f"Error processing user input: {e}", exc_info=True)
+                    print(f"Error: {e}")
                     
             except KeyboardInterrupt:
                 print("\nInterrupted by user")
@@ -162,26 +185,68 @@ class MCPClientApp:
 
 async def main():
     # Configure logging
-    configure_logging(level="INFO")
+    log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+    configure_logging(level=log_level)
     
-    # Server configurations
+    # Server configurations (using the new server names and default ports)
     servers = {
-        "server1": "http://localhost:8101",
-        "server2": "http://localhost:8002"
+        "server_basic": "http://localhost:8101",
+        "server_tasks": "http://localhost:8102"
     }
     
     # Create and start the client application
     app = MCPClientApp(servers)
     
+    # --- Signal Handling for Graceful Shutdown --- 
+    loop = asyncio.get_running_loop()
+    stop_event = asyncio.Event()
+
+    def shutdown_handler(signum, frame):
+        logger.info(f"Received signal {signal.Signals(signum).name}, initiating shutdown...")
+        if not stop_event.is_set():
+            # Use call_soon_threadsafe as signal handlers run in the main thread
+            loop.call_soon_threadsafe(stop_event.set)
+
+    # Register handlers for SIGINT (Ctrl+C) and SIGTERM
+    signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGTERM, shutdown_handler)
+    # --- End Signal Handling --- 
+
     try:
         # Start the client
         if await app.start():
-            # Run the CLI
-            await app.run_cli()
+            # Run the CLI until stop_event is set or CLI exits
+            cli_task = asyncio.create_task(app.run_cli())
+            stop_wait_task = asyncio.create_task(stop_event.wait())
+            
+            # Wait for either the CLI to finish or the stop event
+            done, pending = await asyncio.wait(
+                [cli_task, stop_wait_task],
+                return_when=asyncio.FIRST_COMPLETED
+            )
+            
+            # If stop_event caused completion, cancel the CLI task
+            if stop_wait_task in done:
+                logger.info("Stop event received, cancelling CLI task.")
+                cli_task.cancel()
+                try:
+                    await cli_task # Allow cancellation to propagate
+                except asyncio.CancelledError:
+                    logger.info("CLI task cancelled successfully.")
+            else:
+                 logger.info("CLI task completed normally.")
+            
+    except Exception as e:
+        logger.critical(f"Client encountered critical error: {e}", exc_info=True)
     finally:
-        # Close the client
+        logger.info("Client main loop finished, closing application...")
+        # Ensure close is called regardless of how we exited
         await app.close()
 
 if __name__ == "__main__":
-    # Run the main async function
-    asyncio.run(main()) 
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        # This handles Ctrl+C directly in the client if run standalone,
+        # but the signal handler is more robust for run_all.py
+        logger.info("Client received KeyboardInterrupt, exiting.") 

@@ -5,6 +5,7 @@ import asyncio
 import inspect
 import json
 import uuid
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Dict, Optional, Callable, Awaitable, List
@@ -148,6 +149,9 @@ class BaseMCPServer:
         # Create FastAPI app
         self.app = self._create_app()
         
+        # Register the describe_tools tool by default
+        self.register_tool(name="describe_tools")(self._describe_tools)
+        
         logger.info(f"Initialized BaseMCPServer '{server_name}'")
         
     def _create_app(self) -> FastAPI:
@@ -175,13 +179,14 @@ class BaseMCPServer:
             allow_headers=["*"],
         )
         
-        @app.get("/health")
-        async def health_check():
+        @app.get("/health", name="health_endpoint")
+        async def health():
             """Health check endpoint."""
             return {
                 "status": "ok",
                 "service": self.server_name,
-                "active_sessions": len(self.active_connections)
+                "active_sessions": len(self.active_connections),
+                "available_tools": list(self.tool_registry.keys())
             }
             
         @app.get("/sse")
@@ -448,14 +453,290 @@ class BaseMCPServer:
             except Exception as e:
                 logger.error(f"Error sending notification to {session_id}: {e}")
     
-    def run(self, host: str = "0.0.0.0", port: int = 8000, **kwargs):
+    def run(self, host: Optional[str] = None, port: Optional[int] = None, **kwargs):
         """
-        Run the server.
-        
+        Run the server using uvicorn.
+
         Args:
-            host: Host to listen on
-            port: Port to listen on
+            host: Host to listen on. If None, checks the MCP_HOST environment
+                  variable, otherwise defaults to "0.0.0.0".
+            port: Port to listen on. If None, checks the MCP_PORT environment
+                  variable, otherwise defaults to 8000.
             **kwargs: Additional arguments passed to uvicorn.run
         """
-        logger.info(f"Starting {self.server_name} on {host}:{port}")
-        uvicorn.run(self.app, host=host, port=port, **kwargs) 
+        # Determine host and port
+        final_host = host or os.environ.get("MCP_HOST") or "0.0.0.0"
+        final_port = 8000 # Default port
+        if port is not None:
+            final_port = port
+        else:
+            env_port_str = os.environ.get("MCP_PORT")
+            if env_port_str:
+                try:
+                    final_port = int(env_port_str)
+                except ValueError:
+                    logger.warning(f"Invalid MCP_PORT environment variable '{env_port_str}'. Using default port {final_port}.")
+
+        # Use determined host/port in log message and uvicorn.run
+        logger.info(f"Starting {self.server_name} on {final_host}:{final_port}")
+        uvicorn.run(self.app, host=final_host, port=final_port, **kwargs)
+
+    async def _describe_tools(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Return detailed information about all available tools, including parameters and docstrings.
+        
+        Returns:
+            Dict: A dictionary mapping tool names to their details (description, parameters)
+        """
+        tools_info = {}
+        
+        # Add describe_tools information first
+        tools_info["describe_tools"] = {
+            "description": "Returns detailed information about all available tools, including parameters and docstrings",
+            "parameters": {},
+            "return_type": "Dict[str, Dict[str, Any]]"
+        }
+        
+        for tool_name, tool_func in self.tool_registry.items():
+            # Skip the describe_tools function itself to avoid recursion in display
+            if tool_name == "describe_tools":
+                continue
+                
+            # Get docstring
+            docstring = inspect.getdoc(tool_func) or "No description available"
+            
+            # Get signature information
+            try:
+                sig = inspect.signature(tool_func)
+                parameters = {}
+                
+                for param_name, param in sig.parameters.items():
+                    # Skip 'self' for class methods
+                    if param_name == "self":
+                        continue
+                        
+                    param_info = {
+                        "required": param.default is inspect.Parameter.empty,
+                        "type": str(param.annotation).replace("typing.", "").replace("<class '", "").replace("'>", ""),
+                    }
+                    
+                    # Add default value if available
+                    if param.default is not inspect.Parameter.empty and param.default is not None:
+                        param_info["default"] = param.default
+                        
+                    parameters[param_name] = param_info
+                
+                # Get return type if annotated
+                return_type = "Any"
+                if sig.return_annotation is not inspect.Signature.empty:
+                    return_type = str(sig.return_annotation).replace("typing.", "").replace("<class '", "").replace("'>", "")
+                
+                # Add tool info to result
+                tools_info[tool_name] = {
+                    "description": docstring,
+                    "parameters": parameters,
+                    "return_type": return_type
+                }
+            except Exception as e:
+                logger.error(f"Error getting details for tool '{tool_name}': {e}")
+                tools_info[tool_name] = {
+                    "description": docstring,
+                    "parameters": {},
+                    "error": str(e)
+                }
+                
+        return tools_info
+
+    async def run_with_tasks(
+        self,
+        host: Optional[str] = None,
+        port: Optional[int] = None,
+        log_level: str = "info",
+        concurrent_tasks: Optional[List[Callable[[], Awaitable[Any]]]] = None,
+        shutdown_callbacks: Optional[List[Callable[[], Awaitable[Any]]]] = None,
+        **uvicorn_kwargs
+    ):
+        """
+        Run the MCP server along with additional concurrent asynchronous tasks.
+
+        This method manages the Uvicorn server and user-provided tasks,
+        handling graceful shutdown on KeyboardInterrupt.
+
+        Args:
+            host: The host address to bind the server to. If None, checks
+                  the MCP_HOST environment variable, otherwise defaults to "0.0.0.0".
+            port: The port to bind the server to. If None, checks the
+                  MCP_PORT environment variable, otherwise defaults to 8000.
+            log_level: The logging level for Uvicorn.
+            concurrent_tasks: A list of callable functions that return awaitables
+                              (coroutines) to run concurrently with the server.
+            shutdown_callbacks: A list of callable functions that return awaitables
+                                (coroutines) to execute before shutting down tasks.
+            **uvicorn_kwargs: Additional keyword arguments passed directly to
+                              uvicorn.Config.
+        """
+        # Determine host and port
+        final_host = host or os.environ.get("MCP_HOST") or "0.0.0.0"
+        final_port = 8000 # Default port
+        if port is not None:
+            final_port = port
+        else:
+            env_port_str = os.environ.get("MCP_PORT")
+            if env_port_str:
+                try:
+                    final_port = int(env_port_str)
+                except ValueError:
+                    logger.warning(f"Invalid MCP_PORT environment variable '{env_port_str}'. Using default port {final_port}.")
+
+        config = uvicorn.Config(
+            self.app,
+            host=final_host, # Use determined host
+            port=final_port, # Use determined port
+            log_level=log_level,
+            lifespan="off", # Manage lifecycle manually in this method
+            **uvicorn_kwargs
+        )
+        server = uvicorn.Server(config)
+
+        server_task = None
+        user_task_futures = []
+        all_tasks = []
+
+        try:
+            # Create task for the uvicorn server
+            server_task = asyncio.create_task(server.serve(), name="uvicorn_server")
+            all_tasks.append(server_task)
+
+            # Create asyncio tasks for concurrent user functions
+            checked_tasks_coroutines = []
+            if concurrent_tasks:
+                for task_item_func in concurrent_tasks:
+                    if callable(task_item_func):
+                        try:
+                            coro = task_item_func()
+                            if inspect.isawaitable(coro):
+                                checked_tasks_coroutines.append(coro)
+                                logger.debug(f"Scheduled concurrent task: {getattr(task_item_func, '__name__', repr(task_item_func))}")
+                            else:
+                                logger.warning(f"Callable {getattr(task_item_func, '__name__', repr(task_item_func))} in concurrent_tasks did not return an awaitable, skipping.")
+                        except Exception as e:
+                            logger.error(f"Error calling concurrent task function {getattr(task_item_func, '__name__', repr(task_item_func))}: {e}", exc_info=True)
+                    else:
+                        logger.warning(f"Item {task_item_func} in concurrent_tasks is not callable, skipping.")
+
+                user_task_futures = [asyncio.create_task(ct, name=f"concurrent_task_{i}") for i, ct in enumerate(checked_tasks_coroutines)]
+                all_tasks.extend(user_task_futures)
+
+            if not all_tasks:
+                logger.warning("No server or concurrent tasks to run.")
+                return # Nothing to run
+
+            # Use determined host/port in log message
+            logger.info(f"Running Uvicorn server on {final_host}:{final_port} and {len(user_task_futures)} concurrent task(s)...")
+            # Wait for all tasks to complete or an exception to occur
+            await asyncio.gather(*all_tasks)
+            # This point is reached if all tasks complete successfully without interruption
+
+        except KeyboardInterrupt:
+            logger.info("Received KeyboardInterrupt, initiating graceful shutdown...")
+        except asyncio.CancelledError:
+            logger.info("run_with_tasks task was cancelled.")
+            # Propagate cancellation if needed, or just proceed to finally for cleanup
+        except Exception as e:
+            logger.error(f"An unexpected error occurred in run_with_tasks gather: {e}", exc_info=True)
+            # Ensure cleanup happens in finally block
+
+        finally:
+            logger.info("Starting shutdown process...")
+
+            # 1. Run shutdown callbacks
+            if shutdown_callbacks:
+                logger.info(f"Executing {len(shutdown_callbacks)} shutdown callback(s)...")
+                callback_tasks = []
+                for callback_func in shutdown_callbacks:
+                    if callable(callback_func):
+                        try:
+                            callback_coro = callback_func()
+                            if inspect.isawaitable(callback_coro):
+                                callback_tasks.append(asyncio.create_task(callback_coro, name=f"shutdown_callback_{getattr(callback_func, '__name__', 'unknown')}"))
+                                logger.debug(f"Scheduled shutdown callback: {getattr(callback_func, '__name__', repr(callback_func))}")
+                            else:
+                                logger.warning(f"Shutdown callback {getattr(callback_func, '__name__', repr(callback_func))} did not return an awaitable, skipping.")
+                        except Exception as cb_e:
+                            logger.error(f"Error calling shutdown callback function {getattr(callback_func, '__name__', repr(callback_func))}: {cb_e}", exc_info=True)
+
+                    else:
+                        logger.warning(f"Shutdown callback {callback_func} is not callable, skipping.")
+
+                if callback_tasks:
+                    try:
+                        results = await asyncio.gather(*callback_tasks, return_exceptions=True)
+                        for i, res in enumerate(results):
+                            if isinstance(res, Exception):
+                                logger.error(f"Shutdown callback {callback_tasks[i].get_name()} failed: {res}", exc_info=res)
+                        logger.info("Shutdown callbacks finished.")
+                    except Exception as e_cb_gather:
+                         logger.error(f"Error gathering shutdown callbacks: {e_cb_gather}", exc_info=True)
+
+
+            # 2. Cancel all running tasks (server + user tasks)
+            tasks_to_cancel = []
+            if server_task and not server_task.done():
+                tasks_to_cancel.append(server_task)
+                # Uvicorn specific shutdown signal
+                if hasattr(server, 'should_exit'):
+                     server.should_exit = True
+                     logger.debug("Set server.should_exit = True")
+            for task in user_task_futures:
+                if not task.done():
+                    tasks_to_cancel.append(task)
+
+            if tasks_to_cancel:
+                logger.info(f"Cancelling {len(tasks_to_cancel)} running task(s)...")
+                for task in tasks_to_cancel:
+                    task.cancel()
+
+                # Wait for tasks to finish cancellation
+                cancelled_wait_results = await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+                logger.info("Running tasks cancellation complete.")
+
+                # Log any errors during cancellation (other than CancelledError)
+                for i, result in enumerate(cancelled_wait_results):
+                    task = tasks_to_cancel[i]
+                    task_name = task.get_name() if hasattr(task, 'get_name') else f"task_{i}"
+                    if isinstance(result, Exception) and not isinstance(result, asyncio.CancelledError):
+                        logger.error(f"Error during cancellation of task {task_name}: {result}", exc_info=result)
+                    elif not isinstance(result, asyncio.CancelledError):
+                         logger.debug(f"Task {task_name} finished during cancellation with result: {result}")
+
+            logger.info("Shutdown process complete.")
+
+            logger.info(f"Server '{self.server_name}' has shut down.")
+
+    def run(self, host: Optional[str] = None, port: Optional[int] = None, **kwargs):
+        """
+        Run the server using uvicorn.
+
+        Args:
+            host: Host to listen on. If None, checks the MCP_HOST environment
+                  variable, otherwise defaults to "0.0.0.0".
+            port: Port to listen on. If None, checks the MCP_PORT environment
+                  variable, otherwise defaults to 8000.
+            **kwargs: Additional arguments passed to uvicorn.run
+        """
+        # Determine host and port
+        final_host = host or os.environ.get("MCP_HOST") or "0.0.0.0"
+        final_port = 8000 # Default port
+        if port is not None:
+            final_port = port
+        else:
+            env_port_str = os.environ.get("MCP_PORT")
+            if env_port_str:
+                try:
+                    final_port = int(env_port_str)
+                except ValueError:
+                    logger.warning(f"Invalid MCP_PORT environment variable '{env_port_str}'. Using default port {final_port}.")
+
+        # Use determined host/port in log message and uvicorn.run
+        logger.info(f"Starting {self.server_name} on {final_host}:{final_port}")
+        uvicorn.run(self.app, host=final_host, port=final_port, **kwargs) 

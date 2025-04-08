@@ -12,6 +12,7 @@ from typing import List, Dict, Any
 import asyncio
 import httpx
 import platform # Import platform module
+import logging
 
 # Add pymcp to path if running directly from examples
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -29,15 +30,40 @@ from pymcp_sse.utils import configure_logging, get_logger
 configure_logging(level="INFO")
 logger = get_logger("examples.launcher")
 
-# Define component paths and URLs
-SERVER1_PATH = os.path.join(current_dir, "server1", "main.py")
-SERVER1_URL = "http://localhost:8101"
-SERVER2_PATH = os.path.join(current_dir, "server2", "main.py")
-SERVER2_URL = "http://localhost:8002"
-CLIENT_PATH = os.path.join(current_dir, "client", "main.py")
+# Get the directory of the current script
+script_dir = os.path.dirname(os.path.abspath(__file__))
 
+# --- Prepare file paths ---
+CLIENT_PATH = os.path.join(script_dir, "client", "main.py")
+SERVER_BASIC_PATH = os.path.join(script_dir, "server_basic", "main.py")
+SERVER_TASKS_PATH = os.path.join(script_dir, "server_tasks", "main.py")
+
+# Define Server URLs (match default ports in server files)
+SERVER_BASIC_URL = "http://localhost:8101"
+SERVER_TASKS_URL = "http://localhost:8102"
+
+# --- Global Process Management ---
 # List of started processes
 processes: List[subprocess.Popen] = []
+
+# Server configurations used for health checks
+server_configs = [
+    {"path": SERVER_BASIC_PATH, "port": 8101, "name": "Server Basic", "url": SERVER_BASIC_URL},
+    {"path": SERVER_TASKS_PATH, "port": 8102, "name": "Server Tasks", "url": SERVER_TASKS_URL}
+]
+
+def get_logger(name: str):
+    # Basic logger for run_all
+    logger = logging.getLogger(name)
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter('%(asctime)s - [%(levelname)s] - %(message)s')
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+    return logger
+
+logger = get_logger("run_all")
 
 def start_component(script_path: str, args: List[str] = None) -> subprocess.Popen:
     """
@@ -172,19 +198,16 @@ async def main():
         sys.exit(1)
         
     try:
-        # Start server1
-        server1_process = start_component(SERVER1_PATH)
-        processes.append(server1_process)
+        # Start servers
+        server_processes = []
+        for config in server_configs:
+            process = start_component(config["path"])
+            processes.append(process)
+            server_processes.append((config["url"], process))
         
-        # Start server2
-        server2_process = start_component(SERVER2_PATH)
-        processes.append(server2_process)
-        
-        # Wait a bit for servers to start
+        # Wait for servers to become ready
         logger.info("Waiting for servers to start...")
-        # time.sleep(2) # Replaced with active health check
-        
-        if not await check_servers_ready([(SERVER1_URL, server1_process), (SERVER2_URL, server2_process)]):
+        if not await check_servers_ready(server_processes):
             logger.error("One or more servers failed to become ready")
             stop_all()
             return 1

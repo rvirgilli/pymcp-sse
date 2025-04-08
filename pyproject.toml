@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pymcp-sse"
-version = "0.1.0"
+version = "0.3.1"
 authors = [
-    {name = "Your Name or Org", email = "your-email@example.com"},
+    {name = "Rafaello Virgilli", email = "rvirgilli@gmail.com"},
 ]
-description = "A Python implementation of MCP over HTTP/SSE with robust connection handling."
+description = "A lightweight, flexible implementation of the Model Context Protocol (MCP) for Python applications, specializing in robust HTTP/SSE transport."
 readme = "README.md"
 requires-python = ">=3.8"
 classifiers = [
@@ -29,9 +29,11 @@ dependencies = [
 keywords = ["mcp", "model context protocol", "sse", "server sent events", "llm", "agent"]
 
 [project.urls]
-"Homepage" = "https://github.com/yourusername/pymcp-sse"
-"Repository" = "https://github.com/yourusername/pymcp-sse"
-"Bug Tracker" = "https://github.com/yourusername/pymcp-sse/issues"
+"Repository" = "https://github.com/rvirgilli/pymcp-sse"
+"Bug Tracker" = "https://github.com/rvirgilli/pymcp-sse/issues"
 
-[tool.setuptools]
-packages = ["pymcp_sse"]
+[tool.setuptools.packages.find]
+# Automatically find all packages within the project directory
+where = ["."] 
+include = ["pymcp_sse*"] # Include the main package and its subpackages
+exclude = ["examples*", "tests*"] # Exclude examples and tests directories
